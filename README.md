@@ -94,11 +94,3 @@ O sistema responde automaticamente de acordo com o nível de ameaça:
 ├── requirements.txt         # Dependências do projeto
 └── logs/                    # Diretório de logs (criado automaticamente)
 ```
-
-## Como Testar
-
-1. Inicie a aplicação
-2. Clique em "Iniciar Monitoramento"
-3. Use o botão "Gerar Tráfego de Teste" para simular tráfego
-4. Observe os logs em tempo real
-5. Consulte a inteligência de ameaças usando o campo de busca de IP 
