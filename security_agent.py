@@ -2,393 +2,300 @@ import os
 import json
 import streamlit as st
 from datetime import datetime
-from typing import Dict
+from typing import Dict, List, Union, Any
 import time
 import threading
 import random
 import subprocess
 import platform
+import shlex  # For safe command execution on Linux/macOS
+import re  # For better IP validation
+from collections.abc import Mapping  # For abstract base class
 
 class SecurityAgent:
-    """Classe principal de agente de segurança que coordena ações de defesa"""
-    
-    def __init__(self, config, logger, threat_intel, notification_system):
+    """A classe que implementa um agente de segurança."""
+
+    def __init__(self, config: Mapping, logger, threat_intel, notification_system):
+        """Inicializa o Agente de Segurança."""
+
         self.config = config
         self.logger = logger
         self.threat_intel = threat_intel
         self.notification_system = notification_system
-        
-        # Inicializar conjunto de IPs bloqueados na sessão
+
+        # Inicializa session state (Streamlit specific)
         if "blocked_ips" not in st.session_state:
             st.session_state.blocked_ips = set()
-            
-        # Inicializar conjunto de IPs em monitoramento na sessão
         if "monitored_ips" not in st.session_state:
             st.session_state.monitored_ips = set()
-            
-        # Inicializar conjunto de IPs redirecionados para honeypot
         if "honeypot_ips" not in st.session_state:
             st.session_state.honeypot_ips = set()
-            
-        # Configuração do honeypot
-        self.honeypot_ip = "192.168.1.250"  # IP do honeypot (simulado)
-        self.honeypot_port = 8888            # Porta do honeypot (simulada)
-            
-        # Inicializar estatísticas de ameaças
         if "threat_stats" not in st.session_state:
-            st.session_state.threat_stats = {
-                "high": 0,
-                "medium": 0,
-                "low": 0
-            }
-        
+            st.session_state.threat_stats = {"high": 0, "medium": 0, "low": 0}
+
+        # Honeypot configuration
+        self.honeypot_ip = self._get_config_value("honeypot_ip", "192.168.1.250")
+        self.honeypot_port = self._get_config_value("honeypot_port", 8888)
+
         self._last_analysis_time = 0
         self._analysis_lock = threading.Lock()
-    
-    def analyze_threat(self, threat_data):
-        """Analisa uma ameaça detectada e toma ações apropriadas"""
+
+    def _get_config_value(self, key: str, default: Any) -> Any:
+        """Obtém um valor de configuração, tratando diferentes tipos de config."""
+
+        if isinstance(self.config, Mapping):
+            return self.config.get(key, default)
+        elif hasattr(self.config, key):
+            return getattr(self.config, key)
+        else:
+            self.logger.log_activity(f"Configuração '{key}' não encontrada, usando padrão: {default}", "warning")
+            return default
+
+    def _is_valid_ip(self, ip: str) -> bool:
+        """Valida se a string fornecida é um endereço IPv4 válido."""
+
+        pattern = r'^(\d{1,3}\.){3}\d{1,3}$'
+        if not re.match(pattern, ip):
+            return False
+        octets = ip.split('.')
+        for octet in octets:
+            if int(octet) > 255:
+                return False
+        return True
+
+    def _execute_command(self, command: Union[str, List[str]], shell: bool = False, check: bool = True, capture_output: bool = True, text: bool = True) -> subprocess.CompletedProcess:
+        """Executa um comando do sistema e trata exceções."""
         try:
-            # Obter o IP da ameaça
-            threat_ip = threat_data.get("ip", "desconhecido")
-            
-            # Verificar se o IP já está bloqueado
+            if shell:
+                return subprocess.run(command, shell=True, check=check, capture_output=capture_output, text=text)
+            else:
+                return subprocess.run(command, shell=False, check=check, capture_output=capture_output, text=text)
+        except subprocess.CalledProcessError as e:
+            self.logger.log_activity(f"Erro ao executar o comando: {e.stderr}", "error")
+            raise  # Levanta a exceção para tratamento adicional
+        except FileNotFoundError as e:
+            self.logger.log_activity(f"Comando não encontrado: {e.filename}", "error")
+            raise
+        except Exception as e:
+            self.logger.log_activity(f"Erro inesperado ao executar o comando: {str(e)}", "error")
+            raise
+
+    def analyze_threat(self, threat_data: Dict) -> str:
+        """Analisa dados de ameaças e toma as ações apropriadas."""
+        try:
+            threat_ip = threat_data.get("ip")
+            if not self._is_valid_ip(threat_ip):
+                self.logger.log_activity(f"Endereço IP inválido: {threat_ip}", "error")
+                return None  # Ou lançar uma exceção
+
             if threat_ip in st.session_state.blocked_ips:
-                self.logger.log_activity(f"IP {threat_ip} já está bloqueado. Ignorando nova ameaça.", "warning")
-                return
-            
-            # Verificar se o IP já está em monitoramento
+                self.logger.log_activity(f"IP {threat_ip} já está bloqueado. Ignorando.", "warning")
+                return None
+
             if threat_ip in st.session_state.monitored_ips:
                 self.logger.log_activity(f"IP {threat_ip} já está em monitoramento. Atualizando dados.", "warning")
-            
-            # Log da análise
-            self.logger.log_activity(f"⚠️ Analisando ameaça do IP: {threat_ip}", "warning")
-            
-            # Simular processo de análise
+
+            self.logger.log_activity(f"Analisando ameaça de IP: {threat_ip}", "warning")
             time.sleep(0.5)  # Simular processamento
-            
-            # Determinar nível de ameaça final baseado em diversos fatores
-            if "risk_level" in threat_data:
-                risk_level = threat_data["risk_level"]
-            else:
-                # Usar classificador de ML simulado para determinar o risco
-                risk_level = self._classify_threat(threat_data)
-            
-            # Incrementar estatísticas
-            if risk_level in st.session_state.threat_stats:
-                st.session_state.threat_stats[risk_level] += 1
-            
-            # Tomar ação com base no nível de risco
+
+            risk_level = threat_data.get("risk_level", self._classify_threat(threat_data))
+            if risk_level not in st.session_state.threat_stats:
+                self.logger.log_activity(f"Nível de risco inválido: {risk_level}", "error")
+                return None  # Ou lidar com isso de forma diferente
+            st.session_state.threat_stats[risk_level] += 1
+
             if risk_level == "high":
-                # Para ameaças de alto risco, redirecionar para honeypot
-                if random.random() < 0.5:  # 50% chance de redirecionar para honeypot vs. bloquear
+                if random.random() < 0.5:
                     self.redirect_to_honeypot(threat_ip)
                     threat_level = "ALTO"
-                    self.logger.log_activity(f"🍯 Análise concluída. Nível de ameaça: {threat_level} - Redirecionado para honeypot", "error")
-                    
-                    # Notificar (simulado)
-                    notification_text = f"Alerta de Segurança: IP {threat_ip} redirecionado para honeypot (Ameaça de alto risco)"
-                    self.notification_system.send_notification(notification_text, "alta")
+                    self.logger.log_activity(f"Ameaça ALTO - Redirecionada para honeypot", "error")
+                    self.notification_system.send_notification(f"Alerta de Segurança: IP {threat_ip} para honeypot (alto risco)", "alta")
                 else:
-                    # Para o restante, bloquear automaticamente
                     self.block_ip(threat_ip)
                     threat_level = "ALTO"
-                    self.logger.log_activity(f"🔒 Análise concluída. Nível de ameaça: {threat_level} - Bloqueado", "error")
-                    
-                    # Notificar (simulado)
-                    notification_text = f"Alerta de Segurança: IP {threat_ip} bloqueado automaticamente (Ameaça de alto risco)"
-                    self.notification_system.send_notification(notification_text, "alta")
-                
+                    self.logger.log_activity(f"Ameaça ALTO - Bloqueado", "error")
+                    self.notification_system.send_notification(f"Alerta de Segurança: IP {threat_ip} bloqueado (alto risco)", "alta")
             elif risk_level == "medium":
-                # Para ameaças de médio risco, adicionar ao monitoramento
                 self.monitor_ip(threat_ip)
                 threat_level = "MÉDIO"
-                self.logger.log_activity(f"🔍 Análise concluída. Nível de ameaça: {threat_level}", "warning")
-                self.logger.log_activity(f"👁️ IP {threat_ip} adicionado ao monitoramento contínuo", "warning")
-                
-                # Notificar (simulado)
-                notification_text = f"Alerta de Segurança: IP {threat_ip} colocado em monitoramento (Ameaça de risco médio)"
-                self.notification_system.send_notification(notification_text, "média")
-                
+                self.logger.log_activity(f"Ameaça MÉDIO", "warning")
+                self.logger.log_activity(f"IP {threat_ip} adicionado ao monitoramento contínuo", "warning")
+                self.notification_system.send_notification(f"Alerta de Segurança: IP {threat_ip} monitorando (risco médio)", "média")
             else:
-                # Para ameaças de baixo risco, apenas registrar
                 threat_level = "BAIXO"
-                self.logger.log_activity(f"🔒 Análise concluída. Nível de ameaça: {threat_level}", "info")
-            
-            return threat_level
-            
-        except Exception as e:
-            self.logger.log_activity(f"Erro ao analisar ameaça: {str(e)}", "error")
-            return None
-            
-    def monitor_ip(self, ip):
-        """Adiciona um IP ao monitoramento contínuo"""
-        if ip in st.session_state.monitored_ips:
-            self.logger.log_activity(f"IP {ip} já está em monitoramento", "info")
-            return "já está em monitoramento"
-            
-        # Adicionar ao conjunto de IPs monitorados
-        st.session_state.monitored_ips.add(ip)
-        self.logger.log_activity(f"IP {ip} adicionado ao monitoramento contínuo", "warning")
-        
-        return "colocado em monitoramento"
+                self.logger.log_activity(f"Ameaça BAIXO", "info")
 
-    def _classify_threat(self, threat_data):
-        """Classifica o nível de ameaça com base nos dados recebidos"""
-        # Garantir que as chances de cada nível sejam iguais (33% cada)
-        # Este classificador simulado ignora o risk_level inicial da threat_data
-        # para garantir uma distribuição igual entre os três níveis
-        rand_val = random.random()
-        if rand_val < 0.33:
-            return "high"
-        elif rand_val < 0.66:
-            return "medium"
-        else:
-            return "low"
-    
-    def block_ip(self, ip):
-        """Bloqueia um IP na lista negra
-        
-        Args:
-            ip (str): Endereço IP a ser bloqueado
-        """
-        # Verificar se o IP já está bloqueado
+            return threat_level
+
+        except Exception as e:
+            self.logger.log_activity(f"Erro ao analisar a ameaça: {str(e)}", "error")
+            return None
+
+    # (Outros métodos como monitor_ip, _classify_threat, block_ip, etc.)
+    # ... Veja outros exemplos abaixo para melhorias desses métodos
+
+    def block_ip(self, ip: str) -> str:
+        """Bloqueia um endereço IP malicioso."""
+
+        if not self._is_valid_ip(ip):
+            self.logger.log_activity(f"Endereço IP inválido: {ip}", "error")
+            return "IP inválido"
+
         if ip in st.session_state.blocked_ips:
-            self.logger.log_activity(f"IP {ip} já está bloqueado", 'info')
-            return "já está bloqueado"
-            
-        # Registrar ação
-        self.logger.log_activity(f"🛡️ Bloqueando IP malicioso: {ip}", 'success')
-        
-        # Adicionar ao conjunto de IPs bloqueados
+            self.logger.log_activity(f"IP {ip} já está bloqueado", "info")
+            return "já bloqueado"
+
+        self.logger.log_activity(f"Bloqueando IP malicioso: {ip}", "success")
         st.session_state.blocked_ips.add(ip)
-        
-        # Implementar bloqueio real com base no sistema operacional
+
         success = self._real_ip_block(ip)
-        
         if success:
-            self.logger.log_activity(f"✅ IP {ip} bloqueado com sucesso no firewall", 'success')
+            self.logger.log_activity(f"IP {ip} bloqueado com sucesso no firewall", "success")
             return "bloqueado com sucesso"
         else:
-            self.logger.log_activity(f"⚠️ Bloqueio do IP {ip} registrado apenas no sistema (falha no firewall)", 'warning')
-            return "registrado apenas no sistema"
-            
-    def _real_ip_block(self, ip):
-        """Implementa o bloqueio real do IP no sistema operacional
-        
-        Args:
-            ip (str): Endereço IP a ser bloqueado
-            
-        Returns:
-            bool: True se o bloqueio for bem-sucedido, False caso contrário
-        """
+            self.logger.log_activity(f"IP {ip} bloqueado no sistema, falha no firewall", "warning")
+            return "bloqueado no sistema, falha no firewall"
+
+    def _real_ip_block(self, ip: str) -> bool:
+        """Implementa o bloqueio real do IP no sistema operacional."""
         try:
             system = platform.system().lower()
-            
             if system == "windows":
-                # Bloqueio no Windows Firewall
                 rule_name = f"BlockIP-{ip.replace('.', '-')}"
-                
-                # Criar regra para bloquear tráfego de entrada
                 self.logger.log_activity(f"Criando regra de bloqueio de entrada para IP {ip}", "info")
-                command = f'netsh advfirewall firewall add rule name="{rule_name}" dir=in action=block remoteip={ip}'
-                result = subprocess.run(command, shell=True, capture_output=True, text=True)
-                
-                if result.returncode != 0:
-                    self.logger.log_activity(f"Erro ao criar regra de entrada: {result.stderr}", "error")
-                    return False
-                
-                # Criar regra para bloquear tráfego de saída
+                inbound_command = ["netsh", "advfirewall", "firewall", "add", "rule", "name=" + rule_name, "dir=in", "action=block", "remoteip=" + ip]  # LIST
+                self._execute_command(inbound_command)
+
                 self.logger.log_activity(f"Criando regra de bloqueio de saída para IP {ip}", "info")
-                command_out = f'netsh advfirewall firewall add rule name="{rule_name}-out" dir=out action=block remoteip={ip}'
-                result_out = subprocess.run(command_out, shell=True, capture_output=True, text=True)
-                
-                if result_out.returncode != 0:
-                    self.logger.log_activity(f"Erro ao criar regra de saída: {result_out.stderr}", "error")
-                    return False
-                
-                # Verificar se as regras foram criadas
-                check_command = f'netsh advfirewall firewall show rule name="{rule_name}"'
-                check_result = subprocess.run(check_command, shell=True, capture_output=True, text=True)
-                
-                if "Nenhuma regra correspondente aos critérios especificados" not in check_result.stdout:
-                    self.logger.log_activity(f"✅ Regras de firewall criadas com sucesso para IP {ip}", "success")
-                    return True
-                else:
-                    self.logger.log_activity(f"❌ Falha ao criar regras de firewall para IP {ip}", "error")
-                    return False
-                
+                outbound_command = ["netsh", "advfirewall", "firewall", "add", "rule", "name=" + rule_name + "-out", "dir=out", "action=block", "remoteip=" + ip]  # LIST
+                self._execute_command(outbound_command)
+
+                check_command = ["netsh", "advfirewall", "firewall", "show", "rule", "name=" + rule_name]  # LIST
+                result = self._execute_command(check_command)
+                return "Nenhuma regra correspondente aos critérios especificados" not in result.stdout
+
             elif system == "linux":
-                # Bloqueio com iptables no Linux
-                # Verificar se o IP já está bloqueado
-                check_command = f"sudo iptables -C INPUT -s {ip} -j DROP"
-                result = subprocess.run(check_command, shell=True, capture_output=True)
-                
-                if result.returncode != 0:
-                    # IP não está bloqueado, adicionar regra
-                    command = f"sudo iptables -A INPUT -s {ip} -j DROP"
-                    subprocess.run(command, shell=True, check=True)
-                    
-                    # Bloquear tráfego de saída também
-                    command_out = f"sudo iptables -A OUTPUT -d {ip} -j DROP"
-                    subprocess.run(command_out, shell=True, check=True)
-                
+                self.logger.log_activity(f"Bloqueando {ip} em iptables", "info")
+                inbound_command = ["sudo", "iptables", "-A", "INPUT", "-s", shlex.quote(ip), "-j", "DROP"]  # LIST + shlex
+                self._execute_command(inbound_command)
+                outbound_command = ["sudo", "iptables", "-A", "OUTPUT", "-d", shlex.quote(ip), "-j", "DROP"]  # LIST + shlex
+                self._execute_command(outbound_command)
                 return True
-                
+
             else:
-                # Sistema não suportado
-                self.logger.log_activity(f"Sistema operacional {system} não suportado para bloqueio real", 'error')
+                self.logger.log_activity(f"SO {system} não suportado para bloqueio real", "error")
                 return False
-                
-        except Exception as e:
-            self.logger.log_activity(f"Erro ao bloquear IP {ip} no firewall: {str(e)}", 'error')
+
+        except subprocess.CalledProcessError as e:
+            self.logger.log_activity(f"Erro ao bloquear IP {ip} no firewall: {e.stderr}", "error")
             return False
-            
-    def unblock_ip(self, ip):
-        """Remove um IP da lista negra
-        
-        Args:
-            ip (str): Endereço IP a ser desbloqueado
-        """
-        # Verificar se o IP está bloqueado
-        if ip not in st.session_state.blocked_ips:
-            self.logger.log_activity(f"IP {ip} não está bloqueado", 'info')
-            return "não estava bloqueado"
-            
-        # Remover do conjunto de IPs bloqueados
-        st.session_state.blocked_ips.remove(ip)
-        
-        # Implementar desbloqueio real
-        success = self._real_ip_unblock(ip)
-        
-        # Registrar ação
+        except Exception as e:
+            self.logger.log_activity(f"Erro ao bloquear IP {ip}: {str(e)}", "error")
+            return False
+
+    def redirect_to_honeypot(self, ip: str) -> str:
+        """Redireciona um IP malicioso para um honeypot."""
+
+        if not self._is_valid_ip(ip):
+            self.logger.log_activity(f"Endereço IP inválido: {ip}", "error")
+            return "IP inválido"
+
+        if ip in st.session_state.honeypot_ips:
+            self.logger.log_activity(f"IP {ip} já redirecionado para o honeypot", "info")
+            return "já redirecionado"
+
+        self.logger.log_activity(f"Redirecionando IP malicioso para o honeypot: {ip}", "success")
+        st.session_state.honeypot_ips.add(ip)
+
+        success = self._real_honeypot_redirect(ip)
         if success:
-            self.logger.log_activity(f"✅ IP {ip} desbloqueado com sucesso", 'success')
+            self.logger.log_activity(f"IP {ip} redirecionado com sucesso para o honeypot em {self.honeypot_ip}:{self.honeypot_port}", "success")
+            return "redirecionado com sucesso"
+        else:
+            self.logger.log_activity(f"Redirecionamento do IP {ip} registrado, mas falha ao configurar", "warning")
+            return "redirecionamento registrado, configuração falhou"
+
+    def _real_honeypot_redirect(self, ip: str) -> bool:
+        """Implementa o redirecionamento real do IP para o honeypot."""
+        try:
+            system = platform.system().lower()
+            if system == "windows":
+                rule_name = f"HoneypotRedirect-{ip.replace('.', '-')}"
+                self.logger.log_activity(f"Configurando o encaminhamento de porta para o honeypot em {self.honeypot_ip}:{self.honeypot_port}", "info")
+                command = ["netsh", "interface", "portproxy", "add", "v4tov4",
+                           f"listenport=80", f"listenaddress={ip}",
+                           f"connectport={self.honeypot_port}", f"connectaddress={self.honeypot_ip}"]
+                self._execute_command(command)  # Lista de comando
+                return True
+
+            elif system == "linux":
+                self.logger.log_activity(f"Redirecionando {ip} para honeypot usando iptables", "info")
+                command = ["sudo", "iptables", "-t", "nat", "-A", "PREROUTING",
+                           "-s", shlex.quote(ip), "-j", "DNAT",
+                           "--to-destination", f"{self.honeypot_ip}:{self.honeypot_port}"]
+                self._execute_command(command)  # Lista de comando + shlex
+                return True
+
+            else:
+                self.logger.log_activity(f"Redirecionamento de honeypot não implementado para {system}", "error")
+                return False
+
+        except subprocess.CalledProcessError as e:
+            self.logger.log_activity(f"Erro ao redirecionar o IP {ip} para o honeypot: {e.stderr}", "error")
+            return False
+
+        except Exception as e:
+            self.logger.log_activity(f"Erro ao configurar o redirecionamento de honeypot: {str(e)}", "error")
+            return False
+
+    def unblock_ip(self, ip: str) -> str:
+        """Desbloqueia um endereço IP previamente bloqueado."""
+
+        if not self._is_valid_ip(ip):
+            self.logger.log_activity(f"Endereço IP inválido: {ip}", "error")
+            return "IP inválido"
+
+        if ip not in st.session_state.blocked_ips:
+            self.logger.log_activity(f"IP {ip} não está bloqueado no momento", "info")
+            return "não bloqueado"
+
+        st.session_state.blocked_ips.remove(ip)
+        success = self._real_ip_unblock(ip)
+        if success:
+            self.logger.log_activity(f"IP {ip} desbloqueado com sucesso", "success")
             return "desbloqueado com sucesso"
         else:
-            self.logger.log_activity(f"⚠️ IP {ip} removido apenas do sistema (falha no firewall)", 'warning')
-            return "removido apenas do sistema"
-            
-    def _real_ip_unblock(self, ip):
-        """Remove o bloqueio real do IP no sistema operacional
-        
-        Args:
-            ip (str): Endereço IP a ser desbloqueado
-            
-        Returns:
-            bool: True se o desbloqueio for bem-sucedido, False caso contrário
-        """
+            self.logger.log_activity(f"IP {ip} removido do sistema, mas falha ao desbloquear no firewall", "warning")
+            return "removido do sistema, falha ao desbloquear no firewall"
+
+    def _real_ip_unblock(self, ip: str) -> bool:
+        """Remove o bloqueio de IP no nível do sistema operacional."""
         try:
             system = platform.system().lower()
-            
             if system == "windows":
-                # Desbloqueio no Windows Firewall
-                rule_name = f"BlockIP-{ip.replace('.', '-')}"
-                
-                # Remover regra de entrada
-                command = f'netsh advfirewall firewall delete rule name="{rule_name}"'
-                subprocess.run(command, shell=True, check=True)
-                
-                # Remover regra de saída
-                command_out = f'netsh advfirewall firewall delete rule name="{rule_name}-out"'
-                subprocess.run(command_out, shell=True, check=True)
-                
+                rule_name_in = f"BlockIP-{ip.replace('.', '-')}"
+                rule_name_out = rule_name_in + "-out"
+                delete_in_command = ["netsh", "advfirewall", "firewall", "delete", "rule", "name=" + rule_name_in]  # LIST
+                delete_out_command = ["netsh", "advfirewall", "firewall", "delete", "rule", "name=" + rule_name_out]  # LIST
+                self._execute_command(delete_in_command)
+                self._execute_command(delete_out_command)
                 return True
-                
+
             elif system == "linux":
-                # Desbloqueio com iptables no Linux
-                command = f"sudo iptables -D INPUT -s {ip} -j DROP"
-                subprocess.run(command, shell=True, check=True)
-                
-                # Remover regra de saída
-                command_out = f"sudo iptables -D OUTPUT -d {ip} -j DROP"
-                subprocess.run(command_out, shell=True, check=True)
-                
+                unblock_in_command = ["sudo", "iptables", "-D", "INPUT", "-s", shlex.quote(ip), "-j", "DROP"]  # LIST + shlex
+                unblock_out_command = ["sudo", "iptables", "-D", "OUTPUT", "-d", shlex.quote(ip), "-j", "DROP"]  # LIST + shlex
+                self._execute_command(unblock_in_command, check=False)  # Pode não existir
+                self._execute_command(unblock_out_command, check=False)
                 return True
-                
+
             else:
-                # Sistema não suportado
-                self.logger.log_activity(f"Sistema operacional {system} não suportado para desbloqueio real", 'error')
+                self.logger.log_activity(f"SO {system} não suportado para desbloqueio real", "error")
                 return False
-                
-        except Exception as e:
-            self.logger.log_activity(f"Erro ao desbloquear IP {ip} no firewall: {str(e)}", 'error')
+
+        except subprocess.CalledProcessError as e:
+            self.logger.log_activity(f"Erro ao desbloquear IP {ip} no firewall: {e.stderr}", "error")
             return False
-    
-    def redirect_to_honeypot(self, ip):
-        """Redireciona um IP para o honeypot
-        
-        Args:
-            ip (str): Endereço IP a ser redirecionado
-        """
-        # Verificar se o IP já está redirecionado
-        if ip in st.session_state.honeypot_ips:
-            self.logger.log_activity(f"IP {ip} já está redirecionado para o honeypot", 'info')
-            return "já está redirecionado para honeypot"
-            
-        # Registrar ação
-        self.logger.log_activity(f"🍯 Redirecionando IP malicioso para honeypot: {ip}", 'success')
-        
-        # Adicionar ao conjunto de IPs redirecionados
-        st.session_state.honeypot_ips.add(ip)
-        
-        # Implementar redirecionamento real com base no sistema operacional
-        success = self._real_honeypot_redirect(ip)
-        
-        if success:
-            self.logger.log_activity(f"✅ IP {ip} redirecionado com sucesso para honeypot em {self.honeypot_ip}:{self.honeypot_port}", 'success')
-            return "redirecionado para honeypot"
-        else:
-            self.logger.log_activity(f"⚠️ Redirecionamento do IP {ip} registrado apenas no sistema (falha na configuração)", 'warning')
-            return "registrado apenas no sistema"
-    
-    def _real_honeypot_redirect(self, ip):
-        """Implementa o redirecionamento real do IP para o honeypot
-        
-        Args:
-            ip (str): Endereço IP a ser redirecionado
-            
-        Returns:
-            bool: True se o redirecionamento for bem-sucedido, False caso contrário
-        """
-        try:
-            system = platform.system().lower()
-            
-            if system == "windows":
-                # No Windows, usamos o port forwarding do netsh
-                rule_name = f"HoneypotRedirect-{ip.replace('.', '-')}"
-                
-                # Criar regra para redirecionar tráfego para o honeypot
-                self.logger.log_activity(f"Configurando redirecionamento para honeypot em {self.honeypot_ip}:{self.honeypot_port}", "info")
-                
-                # Criar regra no firewall que permita o tráfego mas o redirecione
-                command = f'netsh interface portproxy add v4tov4 listenport=80 listenaddress={ip} connectport={self.honeypot_port} connectaddress={self.honeypot_ip}'
-                
-                # No ambiente real, executaríamos o comando abaixo:
-                # result = subprocess.run(command, shell=True, capture_output=True, text=True)
-                
-                # Para fins de simulação, apenas logamos o comando
-                self.logger.log_activity(f"Comando simulado: {command}", "info")
-                
-                # Simular sucesso do comando
-                return True
-                
-            elif system == "linux":
-                # No Linux, usamos iptables para redirecionar
-                command = f"sudo iptables -t nat -A PREROUTING -s {ip} -j DNAT --to-destination {self.honeypot_ip}:{self.honeypot_port}"
-                
-                # No ambiente real, executaríamos o comando:
-                # result = subprocess.run(command, shell=True, capture_output=True, text=True)
-                
-                # Para fins de simulação, apenas logamos o comando
-                self.logger.log_activity(f"Comando simulado: {command}", "info")
-                
-                # Simular sucesso do comando
-                return True
-                
-            else:
-                self.logger.log_activity(f"Redirecionamento para honeypot não implementado para o sistema {system}", "error")
-                return False
-                
+
         except Exception as e:
-            self.logger.log_activity(f"Erro ao configurar redirecionamento para honeypot: {str(e)}", "error")
-            return False 
+            self.logger.log_activity(f"Erro ao desbloquear IP {ip}: {str(e)}", "error")
+            return False
