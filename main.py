@@ -10,12 +10,12 @@ if current_dir not in sys.path:
 
 # Importar componentes do sistema
 from config import Config
-from logger import SecurityLogger
-from network_monitor import NetworkMonitor
-from security_agent import SecurityAgent
-from threat_intelligence import ThreatIntelligence
-from front import SecurityUI
-from notification import NotificationSystem
+from core.logger import SecurityLogger
+from core.network_monitor import NetworkMonitor
+from core.security_agent import SecurityAgent
+from intelligence.threat_intelligence import ThreatIntelligence
+from ui.front import SecurityUI
+from core.notification import NotificationSystem
 
 def main():
     """Função principal para iniciar o sistema de segurança"""

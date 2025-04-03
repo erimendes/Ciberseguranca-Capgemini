@@ -30,3 +30,20 @@ Configurabilidade: Em vez de definir valores fixos (como self.honeypot_ip, self.
 Modularização: Divida o código em funções menores e mais focadas. Isso melhora a legibilidade e facilita a manutenção.
 Documentação: Adicione docstrings a todas as funções e classes, explicando seu propósito, argumentos e valores de retorno.
 Testes: Escreva testes unitários para garantir que cada parte do código funcione corretamente.
+
+security_system/
+├── main.py             # Script principal (Streamlit)
+├── config.py           # Configurações do sistema
+├── core/
+│   ├── __init__.py      # Torna 'core' um pacote Python
+│   ├── logger.py        # Sistema de logging personalizado
+│   ├── network_monitor.py # Monitoramento de rede
+│   ├── security_agent.py # Agente de segurança
+│   └── notification.py  # Sistema de notificações
+├── intelligence/
+│   ├── __init__.py      # Torna 'intelligence' um pacote Python
+│   └── threat_intelligence.py # Análise de inteligência de ameaças
+├── ui/
+│   ├── __init__.py      # Torna 'ui' um pacote Python
+│   └── front.py         # Interface Streamlit (SecurityUI)
+└── requirements.txt    # Dependências do projeto
